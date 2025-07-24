@@ -1,34 +1,68 @@
 function main() {
+  const MAX_FEED_HOURS_TTL = 24;
+  const MAX_CACHE_SECS_TTL = 60 * 60;
+
+  const COLUMN_NAME = 0;
+  const COLUMN_FEED_URL = 1;
+  const COLUMN_POLL_TIME = 2;
+  const COLUMN_SKIP_FLAG = 3;
+  const COLUMN_WEBHOOK_URL = 4;
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheets()[0];
-  const range = sheet.getRange('B2:B');
+  const range = sheet.getDataRange().offset(1, 0); // sheet.getRange('A2:A')
   const values = range.getValues();
 
+  const nowLessSpan = new Date();
+  nowLessSpan.setHours(nowLessSpan.getHours() - MAX_FEED_HOURS_TTL);
+
   for (let i = 0; i < values.length; i++) {
-    if (values[i] == '') {
-      continue;
-    }
-
-    const cellFeedName = sheet.getRange('A' + (i + 2));
-    const cellPollDate = sheet.getRange('C' + (i + 2));
-    const cellSkip = sheet.getRange('D' + (i + 2));
-    const cellWebhookURL = sheet.getRange('E' + (i + 2));
-
-    if (cellSkip.getValue()) {
+    if (values[i][COLUMN_FEED_URL] == '' || values[i][COLUMN_SKIP_FLAG]) {
       continue;
     }
 
     try {
-      const pollDate = cellPollDate.getValue();
-      cellPollDate.setValue(new Date().toISOString());
+      range.getCell(i + 1, COLUMN_POLL_TIME + 1).setValue(new Date().toISOString());
 
-      const feed = readRSS(values[i], pollDate);
+      const cache = JSON.parse(CacheService.getScriptCache().get(md5(values[i][COLUMN_FEED_URL]))) ?? {};
+      const entries = {};
+
+      const feed = readRSS(values[i][COLUMN_FEED_URL]);
       feed.forEach((data) => {
+        if (new Date(data.created) < nowLessSpan) {
+          return;
+        }
+
+        const entryID = md5(data.link);
+        entries[entryID] = {
+          ...data,
+          messageID: cache[entryID]?.messageID ?? null,
+        };
+
         Logger.log(data);
-        response = postHook(cellWebhookURL.getValue(), cellFeedName.getValue(), data);
-        console.log(response.getResponseCode());
-        console.log(response.getContentText());
       });
+
+      const postEntries = Object.fromEntries(Object.entries(entries).filter(([k]) => !(k in cache)));
+      const deleteEntries = Object.fromEntries(Object.entries(cache).filter(([k]) => {
+        return new Date(cache[k].created) >= nowLessSpan && !(k in entries);
+      }));
+
+      Logger.log(postEntries);
+      Object.entries(postEntries).forEach(([k, v]) => {
+        response = postHook(values[i][COLUMN_WEBHOOK_URL], v);
+        entries[k].messageID = JSON.parse(response.getContentText())?.id ?? null;
+      });
+      Logger.log(deleteEntries);
+      Object.entries(deleteEntries).forEach(([k, v]) => {
+        response = deleteHook(values[i][COLUMN_WEBHOOK_URL], v);
+        Logger.log(response.getResponseCode());
+        Logger.log(response.getAllHeaders());
+        Logger.log(response.getContentText());
+      });
+
+      Logger.log(cache);
+      Logger.log(entries);
+      CacheService.getScriptCache().put(md5(values[i][COLUMN_FEED_URL]), JSON.stringify(entries), MAX_CACHE_SECS_TTL);
     } catch (e) {
       Logger.log(e);
       continue;
@@ -36,77 +70,125 @@ function main() {
   }
 }
 
-function readRSS(url, pollDate)
+function md5(string)
+{
+  return Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(string)));
+}
+
+function readRSS(url)
+{
+  const response = UrlFetchApp.fetch(url);
+  const contentType = response.getHeaders()["Content-Type"];
+  const contentText = response.getContentText();
+
+  if (contentType.includes("application/json") || contentText.trim().startsWith("{")) {
+    return parseJSON(contentText);
+  } else {
+    return parseXML(contentText);
+  }
+}
+
+function parseJSON(contentText)
+{
+  const feed = JSON.parse(contentText) ?? {};
+  return (feed?.items || []).map((item) => ({
+    name: feed.title,
+    title: item.title,
+    link: item.url,
+    created: item.date_published,
+  }));
+}
+
+function parseXML(contentText)
 {
   // https://developers.google.com/apps-script/reference/xml-service/xml-service
-  const response = UrlFetchApp.fetch(url);
-  const document = XmlService.parse(response.getContentText());
+  const document = XmlService.parse(contentText);
   const root = document.getRootElement();
-  const contents = [];
 
   let namespace = null;
   let pubElement = null;
   let channel = null;
+  let name = "";
   let entries = [];
 
   switch (root.getName().toLowerCase()) {
     case "feed":
       namespace = XmlService.getNamespace("http://www.w3.org/2005/Atom");
-      pubElement = "published"
+      pubElement = "published";
+      name = root.getChild("title", namespace).getText();
       entries = root.getChildren("entry", namespace);
       break;
     case "rdf":
       namespace = XmlService.getNamespace("http://purl.org/rss/1.0/");
       pubElement = "pubDate";
+      channel = root.getChild("channel", namespace);
+      name = channel.getChild("title", namespace).getText();
       entries = root.getChildren("item", namespace);
       break;
     case "rss":
       namespace = XmlService.getNoNamespace();
       pubElement = "pubDate";
-      channel = root.getChild("channel");
+      channel = root.getChild("channel",namespace);
+      name = channel.getChild("title", namespace).getText();
       entries = channel.getChildren("item", namespace);
       break;
     default:
       Logger.log(`Type {root.getName().toLowerCase()} not supported!`);
-      return contents;
+      return [];
   }
 
-  entries.forEach((entry) => {
+  return (entries || []).map((entry) => {
     const title = entry.getChild("title", namespace).getText();
     const link = entry.getChild("link", namespace).getAttribute("href")?.getValue()
       ?? entry.getChild("link", namespace).getText();
     const published = entry.getChild(pubElement, namespace).getText();
 
-    if (Date.parse(pollDate) >= Date.parse(published)) {
-      return;
-    }
-
-    contents.push([title, link, published]);
+    return {
+      name: name,
+      title: title,
+      link: link,
+      created: published,
+    };
   });
-
-  return contents;
 }
 
-function postHook(webhookURL, feedName, data)
+function postHook(webhookURL, data)
 {
+  eval(UrlFetchApp.fetch('https://cdnjs.cloudflare.com/ajax/libs/URI.js/1.19.11/URI.min.js').getContentText());
+
   // https://discord.com/developers/docs/resources/webhook#execute-webhook
   const params = {
     method: "POST",
     contentType: "application/json",
     muteHttpExceptions: false,
     payload: JSON.stringify({
-      username: feedName,
-      // avatar_url: "https://rss.com/blog/wp-content/uploads/2019/10/social_style_3_rss-512-1.png",
+      username: data.name,
       embeds: [
         {
-          type: "rich",
-          title: data[0],
-          url: data[1],
-          timestamp: new Date(data[2]).toISOString(),
+          title: data.title.length > 256 ? `${data.title.substring(0, 250)}...` : data.title,
+          url: data.link,
+          timestamp: new Date(data.created).toISOString(),
+          footer: {
+            text: URI(data.link).hostname(),
+          },
         },
       ],
     }),
   };
 
+  Utilities.sleep(1000);
   return UrlFetchApp.fetch(`${webhookURL}?wait=1`, params);
+}
+
+function deleteHook(webhookURL, data)
+{
+  // https://discord.com/developers/docs/resources/webhook#delete-webhook-message
+  const params = {
+    method: "DELETE",
+    contentType: "application/json",
+    muteHttpExceptions: false,
+  };
+
+  Utilities.sleep(1000);
+  return UrlFetchApp.fetch(`${webhookURL}/messages/${data.messageID}`, params);
 }
