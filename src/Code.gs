@@ -4,9 +4,9 @@ function main() {
 
   const COLUMN_NAME = 0;
   const COLUMN_FEED_URL = 1;
-  const COLUMN_POLL_TIME = 2;
+  const COLUMN_WEBHOOK_URL = 2;
   const COLUMN_SKIP_FLAG = 3;
-  const COLUMN_WEBHOOK_URL = 4;
+  const COLUMN_POLL_TIME = 4;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheets()[0];
@@ -16,18 +16,18 @@ function main() {
   const nowLessSpan = new Date();
   nowLessSpan.setHours(nowLessSpan.getHours() - MAX_FEED_HOURS_TTL);
 
-  for (let i = 0; i < values.length; i++) {
-    if (values[i][COLUMN_FEED_URL] == '' || values[i][COLUMN_SKIP_FLAG]) {
-      continue;
+  values.forEach((value, i) => {
+    if (value[COLUMN_FEED_URL] == '' || value[COLUMN_SKIP_FLAG]) {
+      return;
     }
 
     try {
       range.getCell(i + 1, COLUMN_POLL_TIME + 1).setValue(new Date().toISOString());
 
-      const cache = JSON.parse(CacheService.getScriptCache().get(md5(values[i][COLUMN_FEED_URL]))) ?? {};
+      const cache = JSON.parse(CacheService.getScriptCache().get(md5(value[COLUMN_FEED_URL]))) ?? {};
       const entries = {};
 
-      const feed = readRSS(values[i][COLUMN_FEED_URL]);
+      const feed = readRSS(value[COLUMN_FEED_URL]);
       feed.forEach((data) => {
         if (new Date(data.created) < nowLessSpan) {
           return;
@@ -42,41 +42,39 @@ function main() {
         Logger.log(data);
       });
 
-      const postEntries = Object.fromEntries(Object.entries(entries).filter(([k]) => !(k in cache)));
-      const deleteEntries = Object.fromEntries(Object.entries(cache).filter(([k]) => {
-        return new Date(cache[k].created) >= nowLessSpan && !(k in entries);
-      }));
+      Object.entries(entries).forEach(([k, v]) => {
+        if (k in cache) {
+          return;
+        }
 
-      Logger.log(postEntries);
-      Object.entries(postEntries).forEach(([k, v]) => {
-        response = postHook(values[i][COLUMN_WEBHOOK_URL], v);
+        response = postHook(value[COLUMN_WEBHOOK_URL], v);
         entries[k].messageID = JSON.parse(response.getContentText())?.id ?? null;
+        Logger.log(`++ ${v.link}`);
       });
-      Logger.log(deleteEntries);
-      Object.entries(deleteEntries).forEach(([k, v]) => {
-        response = deleteHook(values[i][COLUMN_WEBHOOK_URL], v);
+      Object.entries(cache).forEach(([k, v]) => {
+        if (new Date(cache[k].created) < nowLessSpan || k in entries) {
+          return;
+        }
+
+        response = deleteHook(value[COLUMN_WEBHOOK_URL], v);
+        Logger.log(`-- ${v.link}`);
         Logger.log(response.getResponseCode());
-        Logger.log(response.getAllHeaders());
-        Logger.log(response.getContentText());
       });
 
       Logger.log(cache);
       Logger.log(entries);
-      CacheService.getScriptCache().put(md5(values[i][COLUMN_FEED_URL]), JSON.stringify(entries), MAX_CACHE_SECS_TTL);
+      CacheService.getScriptCache().put(md5(value[COLUMN_FEED_URL]), JSON.stringify(entries), MAX_CACHE_SECS_TTL);
     } catch (e) {
       Logger.log(e);
-      continue;
     }
-  }
+  });
 }
 
-function md5(string)
-{
+function md5(string) {
   return Utilities.base64EncodeWebSafe(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, String(string)));
 }
 
-function readRSS(url)
-{
+function readRSS(url) {
   const response = UrlFetchApp.fetch(url);
   const contentType = response.getHeaders()["Content-Type"];
   const contentText = response.getContentText();
@@ -88,8 +86,7 @@ function readRSS(url)
   }
 }
 
-function parseJSON(contentText)
-{
+function parseJSON(contentText) {
   const feed = JSON.parse(contentText) ?? {};
   return (feed?.items || []).map((item) => ({
     name: feed.title,
@@ -99,8 +96,7 @@ function parseJSON(contentText)
   }));
 }
 
-function parseXML(contentText)
-{
+function parseXML(contentText) {
   // https://developers.google.com/apps-script/reference/xml-service/xml-service
   const document = XmlService.parse(contentText);
   const root = document.getRootElement();
@@ -133,7 +129,7 @@ function parseXML(contentText)
       entries = channel.getChildren("item", namespace);
       break;
     default:
-      Logger.log(`Type {root.getName().toLowerCase()} not supported!`);
+      Logger.log(`Type ${root.getName().toLowerCase()} not supported!`);
       return [];
   }
 
@@ -152,8 +148,7 @@ function parseXML(contentText)
   });
 }
 
-function postHook(webhookURL, data)
-{
+function postHook(webhookURL, data) {
   eval(UrlFetchApp.fetch('https://cdnjs.cloudflare.com/ajax/libs/URI.js/1.19.11/URI.min.js').getContentText());
 
   // https://discord.com/developers/docs/resources/webhook#execute-webhook
@@ -180,8 +175,7 @@ function postHook(webhookURL, data)
   return UrlFetchApp.fetch(`${webhookURL}?wait=1`, params);
 }
 
-function deleteHook(webhookURL, data)
-{
+function deleteHook(webhookURL, data) {
   // https://discord.com/developers/docs/resources/webhook#delete-webhook-message
   const params = {
     method: "DELETE",
