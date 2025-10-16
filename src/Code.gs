@@ -47,18 +47,23 @@ function main() {
           return;
         }
 
-        response = postHook(value[COLUMN_WEBHOOK_URL], v);
-        entries[k].messageID = JSON.parse(response.getContentText())?.id ?? null;
         Logger.log(`++ ${v.link}`);
+        response = postHook(value[COLUMN_WEBHOOK_URL], value[COLUMN_NAME], v);
+        entries[k].messageID = JSON.parse(response.getContentText())?.id ?? null;
       });
       Object.entries(cache).forEach(([k, v]) => {
         if (new Date(cache[k].created) < nowLessSpan || k in entries) {
           return;
         }
 
-        response = deleteHook(value[COLUMN_WEBHOOK_URL], v);
         Logger.log(`-- ${v.link}`);
-        Logger.log(response.getResponseCode());
+        try {
+          response = deleteHook(value[COLUMN_WEBHOOK_URL], v);
+          Logger.log(response.getResponseCode());
+        } catch (e) {
+          // {"message": "Unknown Message", "code": 10008} (use muteHttpExceptions option to examine full response)
+          Logger.log(e);
+        }
       });
 
       Logger.log(cache);
@@ -133,11 +138,20 @@ function parseXML(contentText) {
       return [];
   }
 
+  Logger.log(name);
   return (entries || []).map((entry) => {
-    const title = entry.getChild("title", namespace).getText();
+    // https://github.com/synzen/MonitoRSS/blob/main/services/backend-api/src/services/feed-fetcher/utils/Article.js#L261
+    const title = entry.getChild("title", namespace)?.getText()
+      || 'UNTITLED';
     const link = entry.getChild("link", namespace).getAttribute("href")?.getValue()
-      ?? entry.getChild("link", namespace).getText();
-    const published = entry.getChild(pubElement, namespace).getText();
+      || entry.getChild("link", namespace)?.getText();
+    const published = entry.getChild(pubElement, namespace)?.getText()
+      || entry.getChild("updated", namespace)?.getText();
+
+    if (!link || !published) {
+      // TODO : Handling of entries without link, published and updated dates
+      return null;
+    }
 
     return {
       name: name,
@@ -145,11 +159,14 @@ function parseXML(contentText) {
       link: link,
       created: published,
     };
+  }).filter((entry) => {
+    return entry;
   });
 }
 
-function postHook(webhookURL, data) {
+function postHook(webhookURL, customName, data) {
   eval(UrlFetchApp.fetch('https://cdnjs.cloudflare.com/ajax/libs/URI.js/1.19.11/URI.min.js').getContentText());
+  const title = data.title.length > 256 ? `${data.title.substring(0, 250)}...` : data.title;
 
   // https://discord.com/developers/docs/resources/webhook#execute-webhook
   const params = {
@@ -157,10 +174,10 @@ function postHook(webhookURL, data) {
     contentType: "application/json",
     muteHttpExceptions: false,
     payload: JSON.stringify({
-      username: data.name,
+      username: customName || data.name,
       embeds: [
         {
-          title: data.title.length > 256 ? `${data.title.substring(0, 250)}...` : data.title,
+          title: title,
           url: data.link,
           timestamp: new Date(data.created).toISOString(),
           footer: {
