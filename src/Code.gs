@@ -5,8 +5,9 @@ function main() {
   const COLUMN_NAME = 0;
   const COLUMN_FEED_URL = 1;
   const COLUMN_WEBHOOK_URL = 2;
-  const COLUMN_SKIP_FLAG = 3;
-  const COLUMN_POLL_TIME = 4;
+  const COLUMN_CONTENT = 3
+  const COLUMN_SKIP_FLAG = 4;
+  const COLUMN_POLL_TIME = 5;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheets()[0];
@@ -48,7 +49,7 @@ function main() {
         }
 
         Logger.log(`++ ${v.link}`);
-        response = postHook(value[COLUMN_WEBHOOK_URL], value[COLUMN_NAME], v);
+        response = postHook(value[COLUMN_WEBHOOK_URL], value[COLUMN_NAME], value[COLUMN_CONTENT], v);
         entries[k].messageID = JSON.parse(response.getContentText())?.id ?? null;
       });
       Object.entries(cache).forEach(([k, v]) => {
@@ -142,7 +143,7 @@ function parseXML(contentText) {
   return (entries || []).map((entry) => {
     // https://github.com/synzen/MonitoRSS/blob/main/services/backend-api/src/services/feed-fetcher/utils/Article.js#L261
     const title = entry.getChild("title", namespace)?.getText()
-      || 'UNTITLED';
+      || "UNTITLED";
     const link = entry.getChild("link", namespace).getAttribute("href")?.getValue()
       || entry.getChild("link", namespace)?.getText();
     const published = entry.getChild(pubElement, namespace)?.getText()
@@ -164,7 +165,7 @@ function parseXML(contentText) {
   });
 }
 
-function postHook(webhookURL, customName, data) {
+function postHook(webhookURL, customName, extraContent, data) {
   eval(UrlFetchApp.fetch('https://cdnjs.cloudflare.com/ajax/libs/URI.js/1.19.11/URI.min.js').getContentText());
   const title = data.title.length > 256 ? `${data.title.substring(0, 250)}...` : data.title;
 
@@ -185,6 +186,10 @@ function postHook(webhookURL, customName, data) {
           },
         },
       ],
+      allowed_mentions: {
+        parse: ["users", "roles", "everyone"]
+      },
+      content: extraContent.replace("{title}", title),
     }),
   };
 
