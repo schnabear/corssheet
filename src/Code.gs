@@ -6,8 +6,9 @@ function main() {
   const COLUMN_FEED_URL = 1;
   const COLUMN_WEBHOOK_URL = 2;
   const COLUMN_CONTENT = 3
-  const COLUMN_SKIP_FLAG = 4;
-  const COLUMN_POLL_TIME = 5;
+  const COLUMN_TITLE_REGEX = 4;
+  const COLUMN_SKIP_FLAG = 5;
+  const COLUMN_POLL_TIME = 6;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheets()[0];
@@ -29,8 +30,12 @@ function main() {
       const entries = {};
 
       const feed = readRSS(value[COLUMN_FEED_URL]);
+      const pattern = value[COLUMN_TITLE_REGEX];
       feed.forEach((data) => {
         if (new Date(data.created) < nowLessSpan) {
+          return;
+        }
+        if (pattern && !(new RegExp(pattern, "i")).test(data.title)) {
           return;
         }
 

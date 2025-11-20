@@ -1,3 +1,3 @@
-Name,Feed URL,Webhook URL,Extra Content,Skip,Last Poll
-Test RDF,https://store.steampowered.com/feeds/,https://discord.com/api/webhooks/XXX/YYY,@here <@&1234> <@5678> {title},0,2025-07-21T14:10:41.541Z
-Test RSS,https://feeds.bbci.co.uk/news/world/rss.xml,https://discord.com/api/webhooks/XXX/YYY,,1,2025-07-21T14:06:06.159Z
+Name,Feed URL,Webhook URL,Extra Content,Title Filter,Skip,Last Poll
+Test RDF,https://store.steampowered.com/feeds/,https://discord.com/api/webhooks/XXX/YYY,@here <@&1234> <@5678> {title},(new|old),0,2025-07-21T14:10:41.541Z
+Test RSS,https://feeds.bbci.co.uk/news/world/rss.xml,https://discord.com/api/webhooks/XXX/YYY,,,1,2025-07-21T14:06:06.159Z
